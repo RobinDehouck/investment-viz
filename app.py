@@ -188,59 +188,88 @@ def update_charts(investments, view_selection):
     charts = []
     if view_selection == 'individual':
         for investment in investments:
-            pnl_series = calculate_individual_pnl(investment, dt.today().strftime('%Y-%m-%d'))
-            fig = go.Figure(data=go.Scatter(x=pnl_series.index, y=pnl_series, mode='lines+markers', name=investment['ticker']))
+            pnl_data = calculate_individual_pnl(investment, dt.today().strftime('%Y-%m-%d'))
+            # Making realized PnL cumulative
+            pnl_data['Cumulative Realized PnL'] = pnl_data['Realized PnL'].cumsum()
+            
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=pnl_data.index, y=pnl_data['Cumulative Realized PnL'], mode='lines', name='Cumulative Realized PnL', fill='tozeroy', line=dict(color='green')))
+            fig.add_trace(go.Scatter(x=pnl_data.index, y=pnl_data['Unrealized PnL'], mode='lines', name='Unrealized PnL', line=dict(color='blue')))
             fig.update_layout(title=f"{investment['ticker']} PnL", xaxis_title='Date', yaxis_title='PnL')
             charts.append(dcc.Graph(figure=fig))
     elif view_selection == 'global':
-        # For global PnL, aggregate individual PnLs for all investments
         global_pnl_data = pd.DataFrame()
+        global_realized_pnl = pd.Series(dtype='float64')
         for investment in investments:
-            pnl_series = calculate_individual_pnl(investment, dt.today().strftime('%Y-%m-%d'))
+            pnl_data = calculate_individual_pnl(investment, dt.today().strftime('%Y-%m-%d'))
+            # Calculate cumulative realized PnL for each investment
+            cumulative_realized_pnl = pnl_data['Realized PnL'].cumsum()
+            global_realized_pnl = global_realized_pnl.add(cumulative_realized_pnl, fill_value=0)
+            total_pnl_series = cumulative_realized_pnl + pnl_data['Unrealized PnL']
+
             if global_pnl_data.empty:
-                global_pnl_data = pd.DataFrame({investment['ticker']: pnl_series})
+                global_pnl_data = pd.DataFrame({investment['ticker']: total_pnl_series})
             else:
-                if investment['ticker'] in global_pnl_data.columns:
-                    global_pnl_data[investment['ticker']] += pnl_series
-                else:
-                    global_pnl_data = global_pnl_data.join(pd.DataFrame({investment['ticker']: pnl_series}), how='outer')
+                global_pnl_data = global_pnl_data.join(pd.DataFrame({investment['ticker']: total_pnl_series}), how='outer')
 
         global_pnl_data = global_pnl_data.fillna(method='ffill').fillna(0)
         global_pnl_data['Total PnL'] = global_pnl_data.sum(axis=1)
 
-        global_fig = go.Figure(data=go.Scatter(x=global_pnl_data.index, y=global_pnl_data['Total PnL'], mode='lines+markers', name='Total PnL'))
+        global_fig = go.Figure()
+        global_fig.add_trace(go.Scatter(x=global_realized_pnl.index, y=global_realized_pnl, mode='lines', name='Total Cumulative Realized PnL', fill='tozeroy', line=dict(color='green')))
+        global_fig.add_trace(go.Scatter(x=global_pnl_data.index, y=global_pnl_data['Total PnL'], mode='lines+markers', name='Total PnL', line=dict(color='blue')))
         global_fig.update_layout(title='Global Portfolio PnL', xaxis_title='Date', yaxis_title='Total PnL')
         charts.append(dcc.Graph(figure=global_fig))
 
     return charts
 
+# issue with some date in closure to find
 def calculate_individual_pnl(investment, end_date):
-    # Fetch historical data for the ticker
     ticker_data = yf.Ticker(investment['ticker'])
-    historical_data = ticker_data.history(start=min(investment['purchase_dates']), end=end_date)
-    
-    # Normalize the index to remove the time from the timestamp
+    all_dates = investment['purchase_dates'] + [d['date'] for d in investment['closures']]
+    all_dates.append(end_date)
+    historical_data = ticker_data.history(start=min(all_dates), end=max(all_dates))
     historical_data.index = historical_data.index.normalize()
-    
-    # Process purchase information
-    purchase_date = pd.to_datetime(investment['purchase_dates'][0]).normalize()
-    purchase_price = historical_data.at[purchase_date, 'Close']
-    
-    # Initialize PnL series with unrealized PnL based on the initial amount
-    initial_amount = investment['amounts'][0]
-    historical_data['PnL'] = (historical_data['Close'] - purchase_price) * initial_amount / purchase_price
-    
-    # If there are closures, adjust the PnL series accordingly
-    if investment['closures']:
-        closure_info = investment['closures'][0]
-        closure_date = pd.to_datetime(closure_info['date']).normalize()
-        closure_amount = closure_info['amount']
-        
-        # Calculate realized PnL at closure and adjust the series thereafter
-        realized_pnl_at_closure = (historical_data.at[closure_date, 'Close'] - purchase_price) * closure_amount / purchase_price
-        historical_data.loc[closure_date:, 'PnL'] = realized_pnl_at_closure
-    
-    return historical_data['PnL']
+
+    # Initialize columns for realized and unrealized PnL in the historical data
+    historical_data['Realized PnL'] = 0
+    historical_data['Unrealized PnL'] = 0
+    total_amount = 0  # Keep track of the total amount after each purchase and closure
+
+    # Process each purchase
+    for i, purchase_date in enumerate(investment['purchase_dates']):
+        purchase_date = pd.to_datetime(purchase_date, utc=True).normalize()
+        amount = investment['amounts'][i]
+        total_amount += amount  # Update total amount
+
+        if purchase_date not in historical_data.index:
+            closest_idx = historical_data.index.get_indexer([purchase_date], method='nearest')[0]
+            closest_date = historical_data.index[closest_idx]
+        else:
+            closest_date = purchase_date
+
+        purchase_price = historical_data.at[closest_date, 'Close']
+        historical_data.loc[closest_date:, 'Unrealized PnL'] += (historical_data['Close'] - purchase_price) * total_amount / purchase_price
+
+    # Process each closure
+    for closure in investment['closures']:
+        closure_date = pd.to_datetime(closure['date'], utc=True).normalize()
+        closure_amount = closure['amount']
+        total_amount -= closure_amount  # Update total amount
+
+        if closure_date not in historical_data.index:
+            closest_idx = historical_data.index.get_indexer([closure_date], method='nearest')[0]
+            closest_date = historical_data.index[closest_idx]
+        else:
+            closest_date = closure_date
+        closure_price = historical_data.at[closest_date, 'Close']
+        print(closure_date, closure_price, total_amount)
+        realized_pnl = (closure_price - purchase_price) * closure_amount / purchase_price
+        historical_data.at[closure_date, 'Realized PnL'] += realized_pnl
+
+        # Update Unrealized PnL post-closure
+        historical_data.loc[closure_date:, 'Unrealized PnL'] = (historical_data['Close'] - closure_price) * total_amount / closure_price if total_amount > 0 else 0
+    return historical_data[['Realized PnL', 'Unrealized PnL']]
 
 if __name__ == '__main__':
     app.run_server(debug=True)
