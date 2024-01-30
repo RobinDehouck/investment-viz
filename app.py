@@ -53,8 +53,24 @@ app.layout = html.Div([
 def add_investment(n_clicks, investments, ticker, amount, purchase_date):
     if investments is None:
         investments = []
-    investments.append({'ticker': ticker.upper(), 'amount': amount,
-                       'purchase_date': purchase_date, 'closures': []})
+
+    # Convert ticker to uppercase for consistency
+    ticker = ticker.upper()
+
+    # Check if the ticker already exists in investments
+    existing_investment = next((item for item in investments if item["ticker"] == ticker), None)
+
+    if existing_investment:
+        # If ticker exists, update the amounts list and add a new purchase date entry
+        existing_investment['purchase_dates'].append(purchase_date)
+        if 'amounts' in existing_investment:
+            existing_investment['amounts'].append(amount)
+        else:
+            existing_investment['amounts'] = [amount]
+    else:
+        # If ticker does not exist, add a new investment entry with amounts list
+        investments.append({'ticker': ticker, 'amounts': [amount], 'purchase_dates': [purchase_date], 'closures': []})
+
     return investments
 
 # Callback for displaying and managing investment list
@@ -69,27 +85,23 @@ def update_investment_list(investments):
 
     investment_elements = []
     for i, investment in enumerate(investments):
-        open_amount = investment['amount'] - sum(closure['amount']
-                                                 for closure in investment.get('closures', []))
+        open_amount = sum(investment['amounts']) - sum(closure['amount'] for closure in investment.get('closures', []))
+        # Handle multiple purchase dates. You could join them or show the most recent with max()
+        purchase_dates_str = ', '.join(investment['purchase_dates'])  # Join all dates into a string
+
         investment_elements.append(html.Div([
-            html.P(
-                f"{investment['ticker']}: ${open_amount} open (purchased on {investment['purchase_date']})"),
-            dcc.Input(id={'type': 'close-amount-input', 'index': i},
-                      type='number', placeholder='Enter Amount to Close'),
-            dcc.DatePickerSingle(id={'type': 'close-date-input', 'index': i},
-                                 placeholder='Select Closing Date', date=dt.today()),
-            html.Button('Close Position', id={
-                        'type': 'close-position-button', 'index': i}, n_clicks=0),
+            html.P(f"{investment['ticker']}: ${open_amount} open (purchased on {purchase_dates_str})"),
+            dcc.Input(id={'type': 'close-amount-input', 'index': i}, type='number', placeholder='Enter Amount to Close'),
+            dcc.DatePickerSingle(id={'type': 'close-date-input', 'index': i}, placeholder='Select Closing Date', date=dt.today()),
+            html.Button('Close Position', id={'type': 'close-position-button', 'index': i}, n_clicks=0),
             html.Div(id={'type': 'close-confirm', 'index': i})
         ], className='row'))
 
     return investment_elements
 
 # Callback to close a portion of an investment
-
-
 @app.callback(
-    Output({'type': 'close-confirm', 'index': dash.ALL}, 'children'),
+    Output('investment-storage', 'data'),  # Update investment-storage with the modified investments data
     Input({'type': 'close-position-button', 'index': dash.ALL}, 'n_clicks'),
     [State('investment-storage', 'data'),
      State({'type': 'close-amount-input', 'index': dash.ALL}, 'value'),
@@ -97,23 +109,24 @@ def update_investment_list(investments):
     prevent_initial_call=True
 )
 def close_investment_position(n_clicks, investments, close_amounts, close_dates):
-    if not n_clicks:
+    if not n_clicks or not investments:
         raise PreventUpdate
 
     ctx = callback_context
     button_id = ctx.triggered[0]['prop_id'].split('.')[0]
     index = json.loads(button_id)['index']
 
+    # Ensure the closure is recorded with 'amount' key
     investment = investments[index]
     close_amount = close_amounts[index]
-    close_date = close_dates[index]
+    # Convert close_date to a consistent date format (e.g., 'YYYY-MM-DD')
+    close_date = pd.to_datetime(close_dates[index]).strftime('%Y-%m-%d')
 
-    investment['closures'].append({'amount': close_amount, 'date': close_date})
-    return [f"Closed {close_amount} of {investment['ticker']} on {close_date}"] * len(investments)
+    if close_amount is not None:  # Check if close_amount is not None
+        investment['closures'].append({'amount': close_amount, 'date': close_date})
+    return investments 
 
 # Callback for exporting investments
-
-
 @app.callback(
     Output('download-investment-data', 'data'),
     Input('export-button', 'n_clicks'),
@@ -154,8 +167,6 @@ def reset_investments(submit_n_clicks):
     return []
 
 # Callback for confirming reset action
-
-
 @app.callback(
     Output('confirm-reset', 'displayed'),
     Input('reset-button', 'n_clicks'),
@@ -165,7 +176,6 @@ def display_confirm_reset(n_clicks):
     return True
 
 # Callback to update charts based on stored data``
-
 @app.callback(
     Output('pnl-charts-container', 'children'),
     [Input('investment-storage', 'data'), Input('pnl-view-selector', 'value')],
@@ -176,50 +186,61 @@ def update_charts(investments, view_selection):
         return []
 
     charts = []
-    if view_selection == 'global':
+    if view_selection == 'individual':
+        for investment in investments:
+            pnl_series = calculate_individual_pnl(investment, dt.today().strftime('%Y-%m-%d'))
+            fig = go.Figure(data=go.Scatter(x=pnl_series.index, y=pnl_series, mode='lines+markers', name=investment['ticker']))
+            fig.update_layout(title=f"{investment['ticker']} PnL", xaxis_title='Date', yaxis_title='PnL')
+            charts.append(dcc.Graph(figure=fig))
+    elif view_selection == 'global':
+        # For global PnL, aggregate individual PnLs for all investments
         global_pnl_data = pd.DataFrame()
         for investment in investments:
-            ticker_data = yf.Ticker(investment['ticker'])
-            df = ticker_data.history(period='1d', start=investment['purchase_date'], end=dt.today().strftime('%Y-%m-%d'))
-            
-            # Normalize timestamps to ensure consistency
-            df.index = pd.to_datetime(df.index.date)
-            
-            # Forward-fill the Close prices for weekends and holidays
-            df['Close'] = df['Close'].fillna(method='ffill')
-            
-            df['PnL'] = (df['Close'] - df['Close'].iloc[0]) * investment['amount'] / df['Close'].iloc[0]
-            df.rename(columns={'PnL': investment['ticker']}, inplace=True)
-
+            pnl_series = calculate_individual_pnl(investment, dt.today().strftime('%Y-%m-%d'))
             if global_pnl_data.empty:
-                global_pnl_data = df[[investment['ticker']]]
+                global_pnl_data = pd.DataFrame({investment['ticker']: pnl_series})
             else:
-                global_pnl_data = global_pnl_data.join(df[[investment['ticker']]], how='outer')
+                if investment['ticker'] in global_pnl_data.columns:
+                    global_pnl_data[investment['ticker']] += pnl_series
+                else:
+                    global_pnl_data = global_pnl_data.join(pd.DataFrame({investment['ticker']: pnl_series}), how='outer')
 
-        # Ensure the global PnL data frame is filled for any missing days
-        global_pnl_data = global_pnl_data.fillna(method='ffill')
-
-        # Calculate total daily PnL across all investments
+        global_pnl_data = global_pnl_data.fillna(method='ffill').fillna(0)
         global_pnl_data['Total PnL'] = global_pnl_data.sum(axis=1)
 
         global_fig = go.Figure(data=go.Scatter(x=global_pnl_data.index, y=global_pnl_data['Total PnL'], mode='lines+markers', name='Total PnL'))
         global_fig.update_layout(title='Global Portfolio PnL', xaxis_title='Date', yaxis_title='Total PnL')
         charts.append(dcc.Graph(figure=global_fig))
-    elif view_selection == 'individual':
-        for investment in investments:
-            ticker_data = yf.Ticker(investment['ticker'])
-            df = ticker_data.history(period='1d', start=investment['purchase_date'], end=dt.today().strftime('%Y-%m-%d'))
-            
-            # Normalize timestamps and forward-fill for weekends and holidays
-            df.index = pd.to_datetime(df.index.date)
-            df['Close'] = df['Close'].fillna(method='ffill')
-
-            df['PnL'] = (df['Close'] - df['Close'].iloc[0]) * investment['amount'] / df['Close'].iloc[0]
-            fig = go.Figure(data=go.Scatter(x=df.index, y=df['PnL'], mode='lines+markers', name=investment['ticker']))
-            fig.update_layout(title=f"{investment['ticker']} PnL", xaxis_title='Date', yaxis_title='PnL')
-            charts.append(dcc.Graph(figure=fig))
 
     return charts
+
+def calculate_individual_pnl(investment, end_date):
+    # Fetch historical data for the ticker
+    ticker_data = yf.Ticker(investment['ticker'])
+    historical_data = ticker_data.history(start=min(investment['purchase_dates']), end=end_date)
+    
+    # Normalize the index to remove the time from the timestamp
+    historical_data.index = historical_data.index.normalize()
+    
+    # Process purchase information
+    purchase_date = pd.to_datetime(investment['purchase_dates'][0]).normalize()
+    purchase_price = historical_data.at[purchase_date, 'Close']
+    
+    # Initialize PnL series with unrealized PnL based on the initial amount
+    initial_amount = investment['amounts'][0]
+    historical_data['PnL'] = (historical_data['Close'] - purchase_price) * initial_amount / purchase_price
+    
+    # If there are closures, adjust the PnL series accordingly
+    if investment['closures']:
+        closure_info = investment['closures'][0]
+        closure_date = pd.to_datetime(closure_info['date']).normalize()
+        closure_amount = closure_info['amount']
+        
+        # Calculate realized PnL at closure and adjust the series thereafter
+        realized_pnl_at_closure = (historical_data.at[closure_date, 'Close'] - purchase_price) * closure_amount / purchase_price
+        historical_data.loc[closure_date:, 'PnL'] = realized_pnl_at_closure
+    
+    return historical_data['PnL']
 
 if __name__ == '__main__':
     app.run_server(debug=True)
