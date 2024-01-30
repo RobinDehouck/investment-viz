@@ -1,5 +1,7 @@
 # Portfolio Tracker
 
+![Portfolio Tracker Screenshot](https://i.ibb.co/84wKjN6/Screen-Shot-2024-01-30-at-17-07-41.png)
+
 A simple yet powerful tool to track your investment portfolio's performance.
 
 ## Getting Started
@@ -38,10 +40,6 @@ http://127.0.0.1:8050/
 ```
 
 You should now be able to use the Portfolio Tracker.
-
-## Using the Portfolio Tracker
-
-![Portfolio Tracker Screenshot](https://i.ibb.co/84wKjN6/Screen-Shot-2024-01-30-at-17-07-41.png)
 
 ### Data Privacy
 
