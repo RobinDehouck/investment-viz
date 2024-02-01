@@ -1,6 +1,6 @@
 # Portfolio Tracker
 
-![Portfolio Tracker Screenshot]([https://i.ibb.co/84wKjN6/Screen-Shot-2024-01-30-at-17-07-41.png](https://i.ibb.co/y0hYzgh/Screen-Shot-2024-02-01-at-17-34-40.png))
+![Portfolio Tracker Screenshot](https://i.ibb.co/y0hYzgh/Screen-Shot-2024-02-01-at-17-34-40.png)
 
 A simple yet powerful tool to track your investment portfolio's performance.
 
