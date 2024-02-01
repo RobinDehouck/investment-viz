@@ -10,6 +10,9 @@ from datetime import datetime as dt
 from dash.exceptions import PreventUpdate
 from pandas import to_datetime, date_range
 
+# To fix:
+#  Realized PnL and Unrealized PnL aren't correct. Review the functions.
+
 app = dash.Dash(__name__, external_stylesheets=[
                 'https://codepen.io/chriddyp/pen/bWLwgP.css'])
 
@@ -54,13 +57,10 @@ app.layout = html.Div([
 def add_investment(n_clicks, investments, ticker, amount, purchase_date):
     if investments is None:
         investments = []
-
     # Convert ticker to uppercase for consistency
     ticker = ticker.upper()
-
     # Create a unique identifier for the new position
     position_id = len(investments)
-
     # Add a new investment entry with the original ticker and a unique position ID
     investments.append({
         'position_id': position_id,
@@ -70,7 +70,6 @@ def add_investment(n_clicks, investments, ticker, amount, purchase_date):
         'purchase_dates': [purchase_date],
         'closures': []
     })
-
     return investments
 
 # Callback for displaying and managing investment list
@@ -82,13 +81,11 @@ def add_investment(n_clicks, investments, ticker, amount, purchase_date):
 def update_investment_list(investments):
     if investments is None:
         raise PreventUpdate
-
     investment_elements = []
     for i, investment in enumerate(investments):
         open_amount = sum(investment['amounts']) - sum(closure['amount'] for closure in investment.get('closures', []))
         # Handle multiple purchase dates. You could join them or show the most recent with max()
         purchase_dates_str = ', '.join(investment['purchase_dates'])  # Join all dates into a string
-
         investment_elements.append(html.Div([
             html.P(f"{investment['ticker']}: ${open_amount} open (purchased on {purchase_dates_str})"),
             dcc.Input(id={'type': 'close-amount-input', 'index': i}, type='number', placeholder='Enter Amount to Close'),
@@ -96,7 +93,6 @@ def update_investment_list(investments):
             html.Button('Close Position', id={'type': 'close-position-button', 'index': i}, n_clicks=0),
             html.Div(id={'type': 'close-confirm', 'index': i})
         ], className='row'))
-
     return investment_elements
 
 # Callback to close a portion of an investment
@@ -111,17 +107,14 @@ def update_investment_list(investments):
 def close_investment_position(n_clicks, investments, close_amounts, close_dates):
     if not n_clicks or not investments:
         raise PreventUpdate
-
     ctx = callback_context
     button_id = ctx.triggered[0]['prop_id'].split('.')[0]
     index = json.loads(button_id)['index']
-
     # Ensure the closure is recorded with 'amount' key
     investment = investments[index]
     close_amount = close_amounts[index]
     # Convert close_date to a consistent date format (e.g., 'YYYY-MM-DD')
     close_date = pd.to_datetime(close_dates[index]).strftime('%Y-%m-%d')
-
     if close_amount is not None:  # Check if close_amount is not None
         investment['closures'].append({'amount': close_amount, 'date': close_date})
     return investments 
@@ -154,8 +147,6 @@ def import_investments(contents, filename):
         raise PreventUpdate
 
 # Callback for resetting investments
-
-
 @app.callback(
     Output('investment-storage', 'data', allow_duplicate=True),
     Input('confirm-reset', 'submit_n_clicks'),
@@ -189,7 +180,6 @@ def update_charts(investments, view_selection):
             pnl_data = calculate_individual_pnl(investment, dt.today().strftime('%Y-%m-%d'))
             # Making realized PnL cumulative
             pnl_data['Cumulative Realized PnL'] = pnl_data['Realized PnL'].cumsum()
-            
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=pnl_data.index, y=pnl_data['Cumulative Realized PnL'], mode='lines', name='Cumulative Realized PnL', fill='tozeroy', line=dict(color='green')))
             fig.add_trace(go.Scatter(x=pnl_data.index, y=pnl_data['Unrealized PnL'], mode='lines', name='Unrealized PnL', line=dict(color='blue')))
@@ -221,58 +211,49 @@ def update_charts(investments, view_selection):
     return charts
 
 def calculate_individual_pnl(investment, end_date):
-    # Use 'original_ticker' for `yfinance` queries
     ticker_data = yf.Ticker(investment['original_ticker'])
-
-    # Convert all dates to UTC and normalize
     all_dates = [to_datetime(date).tz_localize('UTC').normalize() for date in investment['purchase_dates']]
     all_dates += [to_datetime(closure['date']).tz_localize('UTC').normalize() for closure in investment.get('closures', [])]
     all_dates.append(to_datetime(end_date).tz_localize('UTC').normalize())
-
-    # Fetch historical data from yfinance
     historical_data = ticker_data.history(start=min(all_dates), end=max(all_dates))
-    # Ensure the index is in UTC, convert if necessary
     historical_data.index = historical_data.index.tz_convert('UTC') if historical_data.index.tz is not None else historical_data.index.tz_localize('UTC')
     historical_data.index = historical_data.index.normalize()
-
-    # Reindex to include weekends and forward-fill missing data
     full_date_range = date_range(start=min(all_dates), end=max(all_dates), freq='D')
     historical_data = historical_data.reindex(full_date_range, method='ffill')
 
-    # Initialize columns for realized and unrealized PnL
+    # Initialize new columns
+    historical_data['Purchase Price'] = 0.0
+    historical_data['Amount'] = 0.0
     historical_data['Realized PnL'] = 0.0
     historical_data['Unrealized PnL'] = 0.0
-    total_amount = 0  # Track the total amount after each purchase and closure
 
-    # Process each purchase
+    total_amount = 0  # Track the total amount after each purchase and closure
     for i, purchase_date in enumerate(investment['purchase_dates']):
         purchase_date = to_datetime(purchase_date).tz_localize('UTC').normalize()
         amount = investment['amounts'][i]
         total_amount += amount  # Update total amount
-
         if purchase_date in historical_data.index:
             purchase_price = historical_data.at[purchase_date, 'Close']
-            # Update Unrealized PnL from the purchase date onwards
-            historical_data.loc[purchase_date:, 'Unrealized PnL'] += (historical_data['Close'] - purchase_price) * total_amount / purchase_price
+            # Update Purchase Price and Amount from the purchase date onwards
+            historical_data.loc[purchase_date:, 'Purchase Price'] = purchase_price
+            historical_data.loc[purchase_date:, 'Amount'] += amount
 
-    # Process each closure
     for closure in investment.get('closures', []):
         closure_date = to_datetime(closure['date']).tz_localize('UTC').normalize()
         closure_amount = closure['amount']
         total_amount -= closure_amount  # Update total amount
-
         if closure_date in historical_data.index:
             closure_price = historical_data.at[closure_date, 'Close']
-            # Calculate and update realized PnL at the closure date
+            # Calculate Realized PnL for the closure
             realized_pnl = (closure_price - purchase_price) * closure_amount / purchase_price
             historical_data.at[closure_date, 'Realized PnL'] += realized_pnl
-            # Update Unrealized PnL post-closure, if any amount is left
-            if total_amount > 0:
-                historical_data.loc[closure_date:, 'Unrealized PnL'] = (historical_data['Close'] - closure_price) * total_amount / closure_price
-            else:
-                historical_data.loc[closure_date:, 'Unrealized PnL'] = 0
+            # Adjust Amount column post-closure
+            historical_data.loc[closure_date:, 'Amount'] -= closure_amount
 
-    return historical_data[['Realized PnL', 'Unrealized PnL']]
+    # Calculate Unrealized PnL
+    historical_data['Unrealized PnL'] = historical_data['Amount'] / historical_data['Purchase Price'] * (historical_data['Close'] - historical_data['Purchase Price'])
+
+    return historical_data[['Purchase Price', 'Amount', 'Realized PnL', 'Unrealized PnL']]
 
 if __name__ == '__main__':
     app.run_server(debug=True)
