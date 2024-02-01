@@ -41,6 +41,10 @@ http://127.0.0.1:8050/
 
 You should now be able to use the Portfolio Tracker.
 
+### 5. Add your investments
+Go on https://fr.finance.yahoo.com/lookup, look for your investments, and copy the ticker. You can then use this exact ticker when adding your investment on this app.
+For example, in "Bitcoin EUR (BTC-EUR)", the ticker is BTC-EUR.
+
 ### Data Privacy
 
 Your data is stored locally only on your browser. To avoid data loss, remember to export your portfolio regularly. This is especially important if you plan to clear your browser history/cookies or wish to use the app on another device. You can import the exported file to load your data on any device.
